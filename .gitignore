@@ -1,0 +1,79 @@
+
+# ==============================
+# VayuDev - Git Ignore Rules
+# ==============================
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Test and coverage files
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# Python packaging
+build/
+dist/
+*.egg-info/
+
+# IDE and editor settings
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Sensitive or generated datasets
+data/raw/
+data/processed/
+research/
+
+# Machine learning artifacts
+ml/artifacts/
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+
+# Private verification evidence
+uploads/
+private/
+evidence/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Node.js and future frontend
+node_modules/
+.next/
+out/
