@@ -12,7 +12,7 @@ def test_venue_database_crud():
         venue = Venue(
             name=f"VayuDev Test Venue {uuid4()}",
             category="library",
-            address="Demo address",
+            address="mehragaonaddress",
             location=WKTElement("POINT(77.20 28.61)", srid=4326),
             access_type="unknown",
             verification_status="pending",
