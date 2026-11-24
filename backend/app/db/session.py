@@ -1,13 +1,9 @@
 
 from collections.abc import Generator
-
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
-
 from app.core.config import settings
-
-
 # Get database URL from the environment configuration
 database_url = settings.database_url.get_secret_value()
 
@@ -15,7 +11,6 @@ database_url = settings.database_url.get_secret_value()
 url = make_url(database_url).set(
     drivername="postgresql+psycopg"
 )
-
 # Create database engine
 engine = create_engine(
     url,
