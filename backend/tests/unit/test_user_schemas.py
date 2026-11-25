@@ -1,15 +1,9 @@
-
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from uuid import uuid4
-
 import pytest
-
 from pydantic import ValidationError
-
 from app.schemas.users import UserUpdate, UserResponse
-
-
 def test_valid_display_name():
     profile = UserUpdate(
         display_name="VayuDev User"
