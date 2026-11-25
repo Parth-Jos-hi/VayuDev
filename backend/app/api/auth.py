@@ -1,23 +1,22 @@
-from typing import Any,Annotated
+from typing import Annotated
 from fastapi import APIRouter,Depends
 from sqlalchemy.orm import Session
 import uuid
-from app.core.security.auth import get_current_user
-from uuid import UUID
-from app.services.user_service import get_or_create_user
+from app.services.user_service import update_user_profile
 from app.db.session import get_db
+from app.schemas.users import UserResponse,UserUpdate
+from app.core.security.auth import get_current_db_user
+from app.db.models.users import User
 router = APIRouter(
     prefix = "/auth",
     tags = ["Authentication"]
 )
-@router.get("/me")
-def get_my_profile(claims:Annotated[dict[str,Any],Depends(get_current_user)],
-                         db:Annotated[Session,Depends(get_db)],)->dict[str,Any]:
-    user_id = claims["sub"] 
-    user_id_str = uuid.UUID(user_id)
-    user = get_or_create_user(db,user_id_str)
-    return {
-        "user_id": user.id,
-        "display_name":user.display_name,
-        "role": user.role,
-    }
+@router.get("/me",response_model = UserResponse)
+def get_my_profile(current_user: Annotated[User,Depends(get_current_db_user),],) -> User:
+    return current_user
+@router.patch("/me",response_model = UserResponse)
+def update_my_profile(profile_data:UserUpdate,
+                      current_user:Annotated[User,Depends(get_current_db_user),],
+                      db:Annotated[Session,Depends(get_db)],)->User:
+    updated_user = update_user_profile(db,current_user,profile_data)
+    return updated_user
