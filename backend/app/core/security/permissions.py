@@ -1,10 +1,9 @@
 from uuid import UUID
 from fastapi import HTTPException, status
 from app.db.models.users import User
-from app.core.security.auth import get_or_create_user
 from fastapi import Depends
 from collections.abc import Callable
-from typing import Annotated,Any
+from typing import Annotated
 from app.core.security.auth import get_current_db_user
 def check_role(
     user_role: str,
@@ -31,7 +30,7 @@ def check_venue_ownership(
             detail="You are not authorized to manage this venue",
         )
 def require_roles(allowed_roles:set[str],)->Callable[...,User]:
-    def role_checker(current_user:Annotated[dict[str,Any],Depends(get_current_db_user)])->User:
+    def role_checker(current_user:Annotated[User,Depends(get_current_db_user)])->User:
         user_role = current_user.role
         check_role(user_role,allowed_roles)
         return current_user
