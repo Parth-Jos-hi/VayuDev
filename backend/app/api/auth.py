@@ -7,6 +7,7 @@ from app.db.session import get_db
 from app.schemas.users import UserResponse,UserUpdate
 from app.core.security.auth import get_current_db_user
 from app.db.models.users import User
+from app.core.security.permissions import require_roles
 router = APIRouter(
     prefix = "/auth",
     tags = ["Authentication"]
@@ -16,7 +17,13 @@ def get_my_profile(current_user: Annotated[User,Depends(get_current_db_user),],)
     return current_user
 @router.patch("/me",response_model = UserResponse)
 def update_my_profile(profile_data:UserUpdate,
-                      current_user:Annotated[User,Depends(get_current_db_user),],
-                      db:Annotated[Session,Depends(get_db)],)->User:
+                    current_user:Annotated[User,Depends(get_current_db_user),],
+                    db:Annotated[Session,Depends(get_db)],)->User:
     updated_user = update_user_profile(db,current_user,profile_data)
     return updated_user
+@router.get("/test-admin")
+def test_admin_access(current_user:Annotated[User,Depends(require_roles({"admin"})),],)->dict[str,str]:
+    return {
+        "message":"The request is approved",
+        "role":current_user.role,
+    }
