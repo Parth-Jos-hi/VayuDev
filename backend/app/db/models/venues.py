@@ -94,7 +94,6 @@ class Venue(Base):
             """,
             name="ck_venues_access_type",
         ),
-
         # Validate verification priority
         CheckConstraint(
             """
