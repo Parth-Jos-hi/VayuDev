@@ -2,17 +2,20 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Literal
 
 from pydantic import ValidationError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.integrations.venue_dataset import read_venue_dataset
-
+from app.core.logging import get_logger
+from app.integrations.venue_dataset import (
+    VenueDatasetError,
+    read_venue_dataset,
+)
 from app.schemas.venues import VenueIngestionSchema
-
 from app.services.venue_transformer import transform_venue_record
-
 from app.services.venue_loader import (
     DEFAULT_BATCH_SIZE,
     VenueLoadResult,
@@ -20,264 +23,146 @@ from app.services.venue_loader import (
     validate_batch_size,
 )
 
-
-# ==========================================
-# INGESTION TYPE ALIASES
-# ==========================================
+logger = get_logger(__name__)
 
 OSMIdentity = tuple[str, int]
+IngestionStage = Literal["validation", "duplicate"]
 
-IngestionStage = Literal[
-    "validation",
-    "duplicate",
-]
-
-
-# ==========================================
-# INGESTION ISSUE
-# ==========================================
 
 @dataclass(frozen=True)
 class IngestionIssue:
-    """Represent an individual rejected dataset record."""
-
     record_number: int
-
     stage: IngestionStage
-
     message: str
 
 
-# ==========================================
-# INGESTION PREPARATION RESULT
-# ==========================================
-
 @dataclass
 class IngestionResult:
-    """Store the results of venue ingestion preparation."""
-
     synced_at: datetime
-
     total_records: int = 0
-
     valid_records: int = 0
-
     invalid_records: int = 0
-
     duplicate_records: int = 0
-
-    records: list[dict[str, Any]] = field(
-        default_factory=list
-    )
-
-    issues: list[IngestionIssue] = field(
-        default_factory=list
-    )
+    records: list[dict[str, Any]] = field(default_factory=list)
+    issues: list[IngestionIssue] = field(default_factory=list)
 
     @property
     def transformed_records(self) -> int:
-
         return len(self.records)
 
     @property
     def rejected_records(self) -> int:
-
-        return (
-            self.invalid_records
-            + self.duplicate_records
-        )
+        return self.invalid_records + self.duplicate_records
 
     @property
     def has_errors(self) -> bool:
-
         return self.rejected_records > 0
 
 
-# ==========================================
-# COMPLETE INGESTION RESULT
-# ==========================================
-
 @dataclass
 class VenueIngestionRunResult:
-    """Represent a completed venue ingestion operation."""
-
     preparation: IngestionResult
-
     loading: VenueLoadResult
 
 
-# ==========================================
-# VALIDATION ERROR FORMATTING
-# ==========================================
-
-def format_validation_error(
-    error: ValidationError,
-) -> str:
-    """Convert Pydantic errors into readable messages."""
-
-    messages: list[str] = []
+def format_validation_error(error: ValidationError) -> str:
+    messages = []
 
     for detail in error.errors(
         include_url=False,
         include_context=False,
         include_input=False,
     ):
-
-        location = ".".join(
-            str(part)
-            for part in detail["loc"]
-        )
-
-        location = location or "record"
-
-        message = detail["msg"]
-
-        messages.append(
-            f"{location}: {message}"
-        )
+        location = ".".join(map(str, detail["loc"])) or "record"
+        messages.append(f"{location}: {detail['msg']}")
 
     return "; ".join(messages)
 
-
-# ==========================================
-# VENUE INGESTION PREPARATION SERVICE
-# ==========================================
 
 def prepare_venue_ingestion(
     file_path: str | Path,
     synced_at: datetime | None = None,
 ) -> IngestionResult:
-    """Read, validate and transform a venue dataset."""
 
-    # ======================================
-    # INITIALIZE SYNCHRONIZATION TIMESTAMP
-    # ======================================
+    started_at = perf_counter()
 
     if synced_at is None:
-
         synced_at = datetime.now(UTC)
 
-    if (
-        synced_at.tzinfo is None
-        or synced_at.utcoffset() is None
-    ):
-
+    if synced_at.tzinfo is None or synced_at.utcoffset() is None:
         raise ValueError(
             "Synchronization timestamp must be timezone-aware"
         )
 
-    synced_at = synced_at.astimezone(UTC)
-
-    # ======================================
-    # INITIALIZE PROCESSING STATE
-    # ======================================
-
-    result = IngestionResult(
-        synced_at=synced_at
-    )
-
+    result = IngestionResult(synced_at=synced_at.astimezone(UTC))
     seen_identities: set[OSMIdentity] = set()
 
-    # ======================================
-    # READ DATASET RECORDS
-    # ======================================
+    logger.info("event=preparation_started")
 
-    with closing(
-        read_venue_dataset(file_path)
-    ) as dataset:
-
+    with closing(read_venue_dataset(file_path)) as dataset:
         for record_number, row in dataset:
-
             result.total_records += 1
 
-            # ==============================
-            # VALIDATE INDIVIDUAL RECORD
-            # ==============================
-
             try:
-
-                venue = (
-                    VenueIngestionSchema.model_validate(
-                        row
-                    )
-                )
+                venue = VenueIngestionSchema.model_validate(row)
 
             except ValidationError as error:
-
                 result.invalid_records += 1
 
                 result.issues.append(
                     IngestionIssue(
-                        record_number=record_number,
-                        stage="validation",
-                        message=format_validation_error(
-                            error
-                        ),
+                        record_number,
+                        "validation",
+                        format_validation_error(error),
                     )
                 )
 
+                logger.warning(
+                    "event=validation_failed record=%d",
+                    record_number,
+                )
                 continue
 
             result.valid_records += 1
-
-            # ==============================
-            # DETECT DUPLICATE OSM IDENTITIES
-            # ==============================
-
-            identity: OSMIdentity = (
-                venue.osm_type,
-                venue.osm_id,
-            )
+            identity = (venue.osm_type, venue.osm_id)
 
             if identity in seen_identities:
-
                 result.duplicate_records += 1
 
                 result.issues.append(
                     IngestionIssue(
-                        record_number=record_number,
-                        stage="duplicate",
-                        message=(
-                            "Duplicate OSM identity: "
-                            f"{venue.osm_type}/"
-                            f"{venue.osm_id}"
-                        ),
+                        record_number,
+                        "duplicate",
+                        f"Duplicate OSM identity: "
+                        f"{venue.osm_type}/{venue.osm_id}",
                     )
                 )
 
+                logger.warning(
+                    "event=duplicate_record record=%d osm_type=%s osm_id=%d",
+                    record_number,
+                    venue.osm_type,
+                    venue.osm_id,
+                )
                 continue
 
-            # ==============================
-            # TRANSFORM VALID VENUE
-            # ==============================
-
-            transformed = transform_venue_record(
-                venue=venue,
-                synced_at=synced_at,
-            )
-
-            # ==============================
-            # STORE PROCESSING RESULT
-            # ==============================
-
             result.records.append(
-                transformed
+                transform_venue_record(venue, result.synced_at)
             )
+            seen_identities.add(identity)
 
-            seen_identities.add(
-                identity
-            )
-
-    # ======================================
-    # RETURN FINAL PREPARATION RESULT
-    # ======================================
+    logger.info(
+        "event=preparation_completed total=%d transformed=%d "
+        "invalid=%d duplicates=%d duration_seconds=%.3f",
+        result.total_records,
+        result.transformed_records,
+        result.invalid_records,
+        result.duplicate_records,
+        perf_counter() - started_at,
+    )
 
     return result
 
-
-# ==========================================
-# COMPLETE VENUE INGESTION SERVICE
-# ==========================================
 
 def ingest_venue_dataset(
     session: Session,
@@ -285,51 +170,60 @@ def ingest_venue_dataset(
     batch_size: int = DEFAULT_BATCH_SIZE,
     synced_at: datetime | None = None,
 ) -> VenueIngestionRunResult:
-    """Prepare and atomically load a venue dataset."""
-
-    # ======================================
-    # VALIDATE LOADER CONFIGURATION
-    # ======================================
 
     validate_batch_size(batch_size)
 
-    # ======================================
-    # ENSURE TRANSACTION OWNERSHIP
-    # ======================================
-
     if session.in_transaction():
-
         raise RuntimeError(
             "Venue ingestion requires a session "
             "without an active transaction"
         )
 
-    # ======================================
-    # PREPARE DATASET
-    # ======================================
+    started_at = perf_counter()
 
-    preparation = prepare_venue_ingestion(
-        file_path=file_path,
-        synced_at=synced_at,
+    logger.info(
+        "event=ingestion_started batch_size=%d",
+        batch_size,
     )
 
-    # ======================================
-    # ATOMIC DATABASE LOADING
-    # ======================================
+    try:
+        preparation = prepare_venue_ingestion(file_path, synced_at)
 
-    with session.begin():
+        with session.begin():
+            loading = load_venue_records(
+                session=session,
+                records=preparation.records,
+                batch_size=batch_size,
+            )
 
-        loading = load_venue_records(
-            session=session,
-            records=preparation.records,
-            batch_size=batch_size,
+    except VenueDatasetError as error:
+        logger.error(
+            "event=dataset_failed error_type=%s",
+            type(error).__name__,
         )
+        raise
 
-    # ======================================
-    # RETURN COMPLETE INGESTION RESULT
-    # ======================================
+    except SQLAlchemyError as error:
+        logger.error(
+            "event=database_failed error_type=%s",
+            type(error).__name__,
+        )
+        raise
 
-    return VenueIngestionRunResult(
-        preparation=preparation,
-        loading=loading,
+    except Exception as error:
+        logger.error(
+            "event=ingestion_failed error_type=%s",
+            type(error).__name__,
+        )
+        raise
+
+    logger.info(
+        "event=ingestion_completed affected=%d batches=%d "
+        "rejected=%d duration_seconds=%.3f",
+        loading.affected_records,
+        loading.batches_executed,
+        preparation.rejected_records,
+        perf_counter() - started_at,
     )
+
+    return VenueIngestionRunResult(preparation, loading)
