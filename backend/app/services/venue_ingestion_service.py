@@ -5,10 +5,20 @@ from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import ValidationError
+from sqlalchemy.orm import Session
 
 from app.integrations.venue_dataset import read_venue_dataset
+
 from app.schemas.venues import VenueIngestionSchema
+
 from app.services.venue_transformer import transform_venue_record
+
+from app.services.venue_loader import (
+    DEFAULT_BATCH_SIZE,
+    VenueLoadResult,
+    load_venue_records,
+    validate_batch_size,
+)
 
 
 # ==========================================
@@ -39,7 +49,7 @@ class IngestionIssue:
 
 
 # ==========================================
-# INGESTION RESULT
+# INGESTION PREPARATION RESULT
 # ==========================================
 
 @dataclass
@@ -81,6 +91,24 @@ class IngestionResult:
     def has_errors(self) -> bool:
 
         return self.rejected_records > 0
+
+
+# ==========================================
+# COMPLETE INGESTION RESULT
+# ==========================================
+
+@dataclass
+class VenueIngestionRunResult:
+    """Represent a completed venue ingestion operation."""
+
+    preparation: IngestionResult
+
+    loading: VenueLoadResult
+
+
+# ==========================================
+# VALIDATION ERROR FORMATTING
+# ==========================================
 
 def format_validation_error(
     error: ValidationError,
@@ -245,3 +273,63 @@ def prepare_venue_ingestion(
     # ======================================
 
     return result
+
+
+# ==========================================
+# COMPLETE VENUE INGESTION SERVICE
+# ==========================================
+
+def ingest_venue_dataset(
+    session: Session,
+    file_path: str | Path,
+    batch_size: int = DEFAULT_BATCH_SIZE,
+    synced_at: datetime | None = None,
+) -> VenueIngestionRunResult:
+    """Prepare and atomically load a venue dataset."""
+
+    # ======================================
+    # VALIDATE LOADER CONFIGURATION
+    # ======================================
+
+    validate_batch_size(batch_size)
+
+    # ======================================
+    # ENSURE TRANSACTION OWNERSHIP
+    # ======================================
+
+    if session.in_transaction():
+
+        raise RuntimeError(
+            "Venue ingestion requires a session "
+            "without an active transaction"
+        )
+
+    # ======================================
+    # PREPARE DATASET
+    # ======================================
+
+    preparation = prepare_venue_ingestion(
+        file_path=file_path,
+        synced_at=synced_at,
+    )
+
+    # ======================================
+    # ATOMIC DATABASE LOADING
+    # ======================================
+
+    with session.begin():
+
+        loading = load_venue_records(
+            session=session,
+            records=preparation.records,
+            batch_size=batch_size,
+        )
+
+    # ======================================
+    # RETURN COMPLETE INGESTION RESULT
+    # ======================================
+
+    return VenueIngestionRunResult(
+        preparation=preparation,
+        loading=loading,
+    )

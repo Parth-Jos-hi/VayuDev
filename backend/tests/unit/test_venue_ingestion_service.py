@@ -651,7 +651,7 @@ def test_mixed_dataset(tmp_path):
         for issue in result.issues
     ] == [
         "validation",
-        "duplicate",
+        "duplicate",    
         "validation",
     ]
 
