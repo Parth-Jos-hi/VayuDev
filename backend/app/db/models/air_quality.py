@@ -209,7 +209,7 @@ class AirQualityMeasurement(Base):
     quality_status: Mapped[str] = mapped_column(
         Text,
         nullable=False,
-        default=MeasurementQuality.VALID,
+        default="valid",
     )
     ingested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -257,7 +257,7 @@ class AirQualityIngestionRun(Base):
     status: Mapped[str] = mapped_column(
         Text,
         nullable=False,
-        default=IngestionStatus.RUNNING,
+        default="running",
     )
     started_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
