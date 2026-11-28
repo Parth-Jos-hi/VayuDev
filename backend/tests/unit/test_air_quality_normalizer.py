@@ -134,6 +134,18 @@ def test_retains_aggregation_type():
     assert measurement.aggregation_type == "hourly"
 
 
+def test_rejects_measurement_for_a_different_sensor_pollutant():
+    with pytest.raises(
+        MeasurementNormalizationError,
+        match="does not match its sensor",
+    ):
+        MeasurementNormalizer().normalize(
+            make_record(pollutant="pm10"),
+            "sensor-1",
+            expected_pollutant="pm25",
+        )
+
+
 @pytest.mark.parametrize("unit", ["ppb", "ppm", "%", ""])
 def test_rejects_units_without_safe_conversion(unit):
     with pytest.raises(MeasurementNormalizationError, match="unit"):

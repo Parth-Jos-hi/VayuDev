@@ -300,6 +300,7 @@ class AirQualityRepository:
 
         allowed_counts = {
             "records_fetched",
+            "records_upserted",
             "records_inserted",
             "records_updated",
             "records_skipped",

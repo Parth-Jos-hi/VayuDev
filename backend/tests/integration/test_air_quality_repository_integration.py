@@ -169,6 +169,7 @@ def test_ingestion_run_records_final_status_and_counts(db_session: Session):
             completed_at=started_at + timedelta(minutes=5),
             counts={
                 "records_fetched": 10,
+                "records_upserted": 8,
                 "records_inserted": 8,
                 "records_skipped": 2,
             },
@@ -176,6 +177,7 @@ def test_ingestion_run_records_final_status_and_counts(db_session: Session):
 
         assert saved_run.status == "success"
         assert saved_run.records_fetched == 10
+        assert saved_run.records_upserted == 8
         assert saved_run.records_inserted == 8
         assert saved_run.records_skipped == 2
         assert saved_run.completed_at == started_at + timedelta(minutes=5)

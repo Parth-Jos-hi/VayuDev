@@ -273,6 +273,11 @@ class AirQualityIngestionRun(Base):
         nullable=False,
         default=0,
     )
+    records_upserted: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+    )
     records_inserted: Mapped[int] = mapped_column(
         Integer,
         nullable=False,

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
 from typing import Any, Literal
@@ -20,7 +21,11 @@ from app.ingestion.air_quality.station_discovery import (
 from app.ingestion.air_quality.validator import (
     AirQualityMeasurementValidator,
 )
-from app.schemas.air_quality import MeasurementIngestion, SensorIngestion
+from app.schemas.air_quality import (
+    MeasurementIngestion,
+    Pollutant,
+    SensorIngestion,
+)
 
 
 JobType = Literal["discovery", "backfill", "incremental"]
@@ -141,7 +146,7 @@ class AirQualityIngestionService:
         raw_records: list[dict[str, Any]],
         station: DiscoveredStation,
         sensor_external_id: str,
-        sensor_pollutants: dict[str, str],
+        sensor_pollutants: Mapping[str, Pollutant],
         now: datetime,
         result: AirQualityIngestionResult,
     ) -> list[MeasurementIngestion]:
@@ -157,6 +162,7 @@ class AirQualityIngestionService:
                     record,
                     sensor_external_id,
                     aggregation_type="hourly",
+                    expected_pollutant=sensor_pollutants[sensor_external_id],
                 )
             except MeasurementNormalizationError as error:
                 result.reject_measurement((str(error),))

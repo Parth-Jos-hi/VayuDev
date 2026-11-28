@@ -130,11 +130,14 @@ def make_service(provider, **config_overrides):
 
 
 def test_backfill_saves_valid_and_suspect_measurements():
+    wrong_pollutant = make_measurement(20, "2026-10-01T03:00:00Z")
+    wrong_pollutant["parameter"]["name"] = "pm10"
     provider = FakeProvider(
         [
             make_measurement(40, "2026-10-01T00:00:00Z"),
             make_measurement(1200, "2026-10-01T01:00:00Z"),
             make_measurement(10, "2026-10-01T02:00:00Z", unit="ppm"),
+            wrong_pollutant,
         ]
     )
     service, repository = make_service(
@@ -151,11 +154,17 @@ def test_backfill_saves_valid_and_suspect_measurements():
         "valid",
         "suspect",
     ]
-    assert result.measurements_fetched == 3
+    assert result.measurements_fetched == 4
     assert result.measurements_upserted == 2
-    assert result.measurements_rejected == 1
+    assert result.measurements_rejected == 2
     assert result.measurements_suspect == 1
     assert result.rejection_reasons["Unsupported concentration unit: ppm"] == 1
+    assert (
+        result.rejection_reasons[
+            "Measurement pollutant does not match its sensor"
+        ]
+        == 1
+    )
     assert repository.measurement_sources == ["openaq"]
     assert provider.measurement_requests == [
         (

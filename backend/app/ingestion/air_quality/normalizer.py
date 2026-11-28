@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 import math
 from typing import Any
 
-from app.schemas.air_quality import MeasurementIngestion
+from app.schemas.air_quality import MeasurementIngestion, Pollutant
 
 
 class MeasurementNormalizationError(ValueError):
@@ -49,6 +49,7 @@ class MeasurementNormalizer:
         record: dict[str, Any],
         sensor_external_id: str,
         aggregation_type: str = "raw",
+        expected_pollutant: Pollutant | None = None,
     ) -> MeasurementIngestion:
         if not isinstance(record, dict):
             raise MeasurementNormalizationError(
@@ -66,6 +67,10 @@ class MeasurementNormalizer:
             )
 
         pollutant = self._pollutant(parameter)
+        if expected_pollutant is not None and pollutant != expected_pollutant:
+            raise MeasurementNormalizationError(
+                "Measurement pollutant does not match its sensor"
+            )
         value = record.get("value")
         if (
             not isinstance(value, (int, float))
