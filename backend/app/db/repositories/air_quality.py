@@ -6,11 +6,11 @@ from typing import Callable, Literal, TypeVar
 from uuid import UUID
 
 from geoalchemy2.elements import WKTElement
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from app.core.config import MAX_INGESTION_BATCH_SIZE, settings
+from app.core.config import MAX_INGESTION_BATCH_SIZE, Settings, settings
 from app.db.models.air_quality import (
     AirQualityIngestionRun,
     AirQualityMeasurement,
@@ -35,6 +35,17 @@ class RepositoryWriteResult:
     records_received: int = 0
     records_upserted: int = 0
     batches_executed: int = 0
+
+
+@dataclass(frozen=True)
+class IncrementalSensor:
+    id: UUID
+    external_id: str
+    pollutant: str
+    latitude: float
+    longitude: float
+    synced_through: datetime | None
+    last_measurement_at: datetime | None
 
 
 def _deduplicate_batch(
@@ -132,10 +143,8 @@ class AirQualityRepository:
     def upsert_sensors(
         self,
         records: Iterable[SensorIngestion],
-        synced_at: datetime | None = None,
     ) -> RepositoryWriteResult:
         self._require_transaction()
-        synced_at = _utc_timestamp(synced_at)
         result = RepositoryWriteResult()
         table = AirQualitySensor.__table__
 
@@ -156,8 +165,6 @@ class AirQualityRepository:
                     "pollutant": record.pollutant,
                     "original_unit": record.original_unit,
                     "is_active": record.is_active,
-                    "last_measurement_at": record.last_measurement_at,
-                    "last_synced_at": synced_at,
                 }
                 for record in unique
             ]
@@ -171,11 +178,6 @@ class AirQualityRepository:
                     "pollutant": incoming.pollutant,
                     "original_unit": incoming.original_unit,
                     "is_active": incoming.is_active,
-                    "last_measurement_at": func.coalesce(
-                        incoming.last_measurement_at,
-                        table.c.last_measurement_at,
-                    ),
-                    "last_synced_at": incoming.last_synced_at,
                     "updated_at": func.now(),
                 },
             ).returning(table.c.id)
@@ -229,23 +231,65 @@ class AirQualityRepository:
 
             statement = insert(table).values(rows)
             incoming = statement.excluded
+            fields = (
+                "value", "unit", "original_value", "original_unit", "quality_status",
+            )
             statement = statement.on_conflict_do_update(
                 constraint="uq_air_quality_measurements_observation",
                 set_={
-                    "value": incoming.value,
-                    "unit": incoming.unit,
-                    "original_value": incoming.original_value,
-                    "original_unit": incoming.original_unit,
-                    "quality_status": incoming.quality_status,
+                    **{field: incoming[field] for field in fields},
                     "ingested_at": func.now(),
                 },
+                where=or_(*(
+                    table.c[field].is_distinct_from(incoming[field]) for field in fields
+                )),
             ).returning(table.c.id)
             result.records_upserted += len(
                 self.session.execute(statement).scalars().all()
             )
             result.batches_executed += 1
+            sensor = AirQualitySensor.__table__
+            for sensor_id in sorted(set(sensor_ids.values())):
+                latest = select(func.max(table.c.period_end)).where(
+                    table.c.sensor_id == sensor_id,
+                    table.c.quality_status != "rejected",
+                ).scalar_subquery()
+                self.session.execute(
+                    update(sensor).where(sensor.c.id == sensor_id)
+                    .values(last_measurement_at=latest)
+                )
 
         return result
+
+    def incremental_sensors(self, config: Settings) -> list[IncrementalSensor]:
+        sensor, station = AirQualitySensor, AirQualityStation
+        rows = self.session.execute(
+            select(
+                sensor.id, sensor.external_id, sensor.pollutant, station.latitude,
+                station.longitude, sensor.synced_through, sensor.last_measurement_at,
+            ).join(sensor.station)
+            .where(
+                sensor.source == "openaq",
+                station.is_mobile.is_(False),
+                sensor.pollutant.in_(config.supported_pollutants),
+                station.latitude.between(config.study_region_south, config.study_region_north),
+                station.longitude.between(config.study_region_west, config.study_region_east),
+            )
+            .order_by(sensor.synced_through.asc().nulls_first(), sensor.id)
+        ).all()
+        return [IncrementalSensor(*row) for row in rows]
+
+    def complete_sensor_window(
+        self, sensor_id: UUID, through: datetime, synced_at: datetime
+    ) -> None:
+        self._require_transaction()
+        sensor = AirQualitySensor.__table__
+        self.session.execute(
+            update(sensor).where(sensor.c.id == sensor_id).values(
+                synced_through=func.greatest(sensor.c.synced_through, through),
+                last_synced_at=func.greatest(sensor.c.last_synced_at, synced_at),
+            )
+        )
 
     def get_sensor_pollutants(self, source: DataSource) -> dict[str, str]:
         self._validate_source(source)
@@ -371,7 +415,7 @@ class AirQualityRepository:
             select(AirQualitySensor.id, AirQualitySensor.external_id).where(
                 AirQualitySensor.source == source,
                 AirQualitySensor.external_id.in_(external_ids),
-            )
+            ).order_by(AirQualitySensor.id).with_for_update()
         ).all()
         sensor_ids = {
             external_id: sensor_id

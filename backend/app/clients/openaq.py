@@ -154,7 +154,9 @@ class OpenAQClient:
             if isinstance(found, int) and not isinstance(found, bool):
                 if len(records) >= found:
                     break
-            if len(page_records) < limit:
+                if not page_records:
+                    raise InvalidProviderResponse("OpenAQ pagination ended before all results arrived")
+            elif len(page_records) < limit:
                 break
             page += 1
 

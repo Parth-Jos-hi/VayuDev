@@ -125,6 +125,7 @@ class AirQualitySensor(Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    synced_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_synced_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,

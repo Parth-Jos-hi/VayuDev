@@ -102,13 +102,8 @@ def test_station_and_sensor_upserts_keep_identity_and_metadata(
         assert saved_station.latitude == 28.62
         assert sensor_result.records_upserted == 1
         assert saved_sensor.is_active is False
-        assert saved_sensor.last_measurement_at == datetime(
-            2026,
-            11,
-            28,
-            7,
-            tzinfo=timezone.utc,
-        )
+        assert saved_sensor.last_measurement_at is None
+        assert saved_sensor.last_synced_at is None
         assert repository.get_sensor_pollutants("openaq") == {
             "sensor-1": "pm25"
         }

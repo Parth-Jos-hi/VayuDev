@@ -65,6 +65,17 @@ def test_fetch_locations_uses_configured_delhi_bbox_and_pages(provider_factory):
     assert requests[1].url.params["page"] == "2"
 
 
+def test_hourly_fetch_rejects_incomplete_pagination(provider_factory):
+    def handler(request):
+        page = int(request.url.params["page"])
+        records = [{"value": 20}] if page == 1 else []
+        return httpx.Response(200, json=response(records, page=page, found=2))
+
+    provider = provider_factory(handler)
+    with pytest.raises(InvalidProviderResponse, match="before all results arrived"):
+        provider.fetch_hourly_measurements(100)
+
+
 @pytest.mark.parametrize(
     ("method", "path"),
     [

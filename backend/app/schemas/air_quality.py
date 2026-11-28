@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal
 from uuid import UUID
 
@@ -148,6 +148,8 @@ class MeasurementResponse(SchemaBase):
 
 
 class LatestObservationResponse(SchemaBase):
+    model_config = ConfigDict(from_attributes=True)
+
     station_id: UUID
     station_name: str | None
     pollutant: Pollutant
@@ -156,9 +158,20 @@ class LatestObservationResponse(SchemaBase):
     period_start: datetime
     period_end: datetime
     quality_status: MeasurementQuality
+    sensor_id: UUID
+    aggregation_type: AggregationType
 
 
-class HistoricalMeasurementQuery(SchemaBase):
+class AirQualityPage(SchemaBase):
+    limit: int = Field(default=100, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0, le=100000)
+
+
+class SensorQuery(AirQualityPage):
+    pollutant: Pollutant | None = None
+
+
+class HistoricalMeasurementQuery(AirQualityPage):
     from_at: datetime
     to_at: datetime
     pollutant: Pollutant | None = None
@@ -176,6 +189,8 @@ class HistoricalMeasurementQuery(SchemaBase):
     def validate_range(self):
         if self.to_at <= self.from_at:
             raise ValueError("to_at must be later than from_at")
+        if self.to_at - self.from_at > timedelta(days=31):
+            raise ValueError("Measurement range cannot exceed 31 days")
         return self
 
 
@@ -185,3 +200,4 @@ class FreshnessCoverageResponse(SchemaBase):
     age_seconds: int | None = Field(default=None, ge=0)
     is_fresh: bool
     measurement_count: int = Field(ge=0)
+    first_measurement_at: datetime | None = None

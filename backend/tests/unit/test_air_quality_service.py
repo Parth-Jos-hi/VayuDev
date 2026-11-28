@@ -1,10 +1,13 @@
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
+from uuid import uuid4
 
 import pytest
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
-from app.db.repositories.air_quality import RepositoryWriteResult
+from app.core.exceptions import ExternalServiceError, RequestBudgetExceeded
+from app.db.repositories.air_quality import IncrementalSensor, RepositoryWriteResult
 from app.services.air_quality_service import AirQualityIngestionService
 
 
@@ -35,6 +38,8 @@ class FakeRepository:
         self.measurements = []
         self.sync_times = []
         self.measurement_sources = []
+        self.incremental = []
+        self.checkpoints = []
 
     def upsert_stations(self, records, synced_at):
         self.stations.extend(records)
@@ -45,14 +50,20 @@ class FakeRepository:
             batches_executed=int(bool(records)),
         )
 
-    def upsert_sensors(self, records, synced_at):
+    def upsert_sensors(self, records):
         self.sensors.extend(records)
-        self.sync_times.append(synced_at)
         return RepositoryWriteResult(
             records_received=len(records),
             records_upserted=len(records),
             batches_executed=int(bool(records)),
         )
+
+    def incremental_sensors(self, config):
+        return self.incremental
+
+    def complete_sensor_window(self, sensor_id, through, synced_at):
+        assert self.session.in_transaction()
+        self.checkpoints.append((sensor_id, through, synced_at))
 
     def upsert_measurements(self, records, source):
         self.measurements.extend(records)
@@ -193,30 +204,84 @@ def test_discovery_only_does_not_fetch_measurements():
     assert provider.sensor_requests == [17]
 
 
-def test_incremental_sync_reuses_last_sensor_timestamp_with_overlap():
-    provider = FakeProvider(measurements=[])
-    service, _ = make_service(provider)
-
-    service.sync("incremental", now=NOW)
-
-    assert provider.measurement_requests == [
-        (
-            100,
-            datetime(2026, 11, 28, 7, 15, tzinfo=timezone.utc),
-            NOW,
-            None,
-        )
+def test_incremental_sync_uses_database_checkpoint_and_replays_overlap():
+    records = [
+        make_measurement(20, "2026-11-28T06:30:00Z"),
+        make_measurement(30, "2026-11-28T07:00:00Z"),
+        make_measurement(40, "2026-11-28T07:30:00Z"),
     ]
-
-
-def test_incremental_sync_skips_sensors_without_a_checkpoint():
-    provider = FakeProvider(last_seen=None)
-    service, _ = make_service(provider)
+    provider = FakeProvider(measurements=records)
+    service, repository = make_service(provider, incremental_overlap_seconds=3600)
+    sensor = IncrementalSensor(
+        uuid4(), "100", "pm25", 28.56, 77.18, NOW - timedelta(minutes=30), None,
+    )
+    repository.incremental = [sensor]
 
     result = service.sync("incremental", now=NOW)
 
-    assert result.sensors_skipped == 1
-    assert provider.measurement_requests == []
+    assert provider.measurement_requests == [
+        (100, NOW - timedelta(hours=2, minutes=30), NOW, None)
+    ]
+    assert provider.location_requests == []
+    assert [item.value for item in repository.measurements] == [20, 30]
+    assert repository.checkpoints == [(sensor.id, NOW, NOW)]
+    assert result.measurements_skipped == 1
+    assert result.sensors_missing == result.sensors_stale == 0
+
+
+def test_incremental_empty_window_advances_checkpoint_but_keeps_stale_age():
+    provider = FakeProvider()
+    service, repository = make_service(
+        provider, air_quality_historical_end=NOW.date(), incremental_overlap_seconds=0,
+    )
+    sensor = IncrementalSensor(
+        uuid4(), "100", "pm25", 28.56, 77.18, None, NOW - timedelta(days=1),
+    )
+    repository.incremental = [sensor]
+
+    result = service.sync("incremental", now=NOW)
+
+    assert provider.measurement_requests[0][1] == NOW.replace(hour=0) - timedelta(hours=1)
+    assert repository.checkpoints == [(sensor.id, NOW, NOW)]
+    assert result.sensors_stale == 1
+
+
+@pytest.mark.parametrize("error", [ExternalServiceError(), SQLAlchemyError(), RequestBudgetExceeded()])
+def test_incremental_stops_at_failed_window(monkeypatch, error):
+    provider = FakeProvider()
+    service, repository = make_service(provider, incremental_overlap_seconds=0)
+    first = IncrementalSensor(
+        uuid4(), "100", "pm25", 28.56, 77.18, NOW - timedelta(days=20), None,
+    )
+    second = IncrementalSensor(
+        uuid4(), "101", "pm25", 28.56, 77.18, NOW - timedelta(hours=1), None,
+    )
+    repository.incremental = [first, second]
+
+    failed = False
+    target, method = (
+        (repository, "upsert_measurements") if isinstance(error, SQLAlchemyError)
+        else (provider, "fetch_hourly_measurements")
+    )
+    original = getattr(target, method)
+
+    def fail_on_second(*args, **kwargs):
+        nonlocal failed
+        if len(repository.checkpoints) == 1 and not failed:
+            failed = True
+            raise error
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(target, method, fail_on_second)
+    result = service.sync("incremental", now=NOW)
+
+    assert repository.checkpoints[0] == (first.id, NOW - timedelta(days=13), NOW)
+    assert result.failed_windows == {
+        f"100@{(NOW - timedelta(days=13)).isoformat()}": type(error).__name__
+    }
+    assert repository.checkpoints[1:] == (
+        [] if isinstance(error, RequestBudgetExceeded) else [(second.id, NOW, NOW)]
+    )
 
 
 def test_sync_requires_a_fresh_session_transaction():
