@@ -5,6 +5,12 @@ from app.db.base import Base
 from app.db.session import engine
 from app.db.models.venues import Venue
 from app.db.models.users import User
+from app.db.models.air_quality import (
+    AirQualityIngestionRun,
+    AirQualityMeasurement,
+    AirQualitySensor,
+    AirQualityStation,
+)
 config = context.config
 if (
     config.config_file_name is not None
