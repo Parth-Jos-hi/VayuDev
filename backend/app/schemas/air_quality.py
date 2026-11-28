@@ -28,6 +28,7 @@ class StationIngestion(SchemaBase):
     locality: str | None = None
     provider_name: str | None = None
     is_mobile: bool = False
+    is_active: bool = True
 
     @field_validator("name", "locality", "provider_name", mode="before")
     @classmethod
@@ -51,12 +52,24 @@ class SensorIngestion(SchemaBase):
     pollutant: Pollutant
     original_unit: str = Field(min_length=1)
     is_active: bool = True
+    last_measurement_at: datetime | None = None
 
     @field_validator("pollutant", mode="before")
     @classmethod
     def normalize_pollutant(cls, value):
         if isinstance(value, str):
             return value.strip().lower()
+        return value
+
+    @field_validator("last_measurement_at")
+    @classmethod
+    def normalize_last_measurement_at(cls, value: datetime | None):
+        if value is not None:
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(
+                    "Last measurement timestamp must include timezone information"
+                )
+            return value.astimezone(timezone.utc)
         return value
 
 
