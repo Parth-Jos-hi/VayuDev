@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from app.clients.openaq import AirQualityProvider
 from app.core.config import Settings, settings
@@ -20,6 +20,7 @@ from app.ingestion.air_quality.station_discovery import (
 from app.ingestion.air_quality.validator import (
     AirQualityMeasurementValidator,
 )
+from app.schemas.air_quality import MeasurementIngestion, SensorIngestion
 
 
 JobType = Literal["discovery", "backfill", "incremental"]
@@ -137,14 +138,14 @@ class AirQualityIngestionService:
 
     def _validated_measurements(
         self,
-        raw_records: list[dict],
+        raw_records: list[dict[str, Any]],
         station: DiscoveredStation,
         sensor_external_id: str,
         sensor_pollutants: dict[str, str],
         now: datetime,
         result: AirQualityIngestionResult,
-    ):
-        measurements = []
+    ) -> list[MeasurementIngestion]:
+        measurements: list[MeasurementIngestion] = []
         coordinates = {
             "latitude": station.station.latitude,
             "longitude": station.station.longitude,
@@ -184,7 +185,7 @@ class AirQualityIngestionService:
     def _measurement_window(
         self,
         job_type: JobType,
-        sensor,
+        sensor: SensorIngestion,
         now: datetime,
     ) -> tuple[datetime, datetime] | None:
         if job_type == "backfill":
