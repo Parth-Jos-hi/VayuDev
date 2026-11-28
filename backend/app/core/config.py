@@ -1,8 +1,22 @@
 from datetime import date
+import math
 from typing import Annotated
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+
+DEFAULT_AIR_QUALITY_HIGH_CONCENTRATION_LIMITS = {
+    "pm25": 1000.0,
+    "pm10": 1000.0,
+    "no2": 2000.0,
+    "so2": 2000.0,
+    "co": 100.0,
+    "o3": 2500.0,
+    "nh3": 2000.0,
+    "pb": 30.0,
+}
+MAX_INGESTION_BATCH_SIZE = 1000
 
 
 class Settings(BaseSettings):
@@ -39,9 +53,16 @@ class Settings(BaseSettings):
     air_quality_historical_end: date = date(2026, 11, 1)
 
     # Operational limits and freshness rules
-    ingestion_batch_size: int = Field(default=500, gt=0)
+    ingestion_batch_size: int = Field(
+        default=500,
+        gt=0,
+        le=MAX_INGESTION_BATCH_SIZE,
+    )
     air_quality_freshness_seconds: int = Field(default=3600, gt=0)
     incremental_overlap_seconds: int = Field(default=900, ge=0)
+    air_quality_high_concentration_limits: dict[str, float] = Field(
+        default_factory=lambda: DEFAULT_AIR_QUALITY_HIGH_CONCENTRATION_LIMITS.copy()
+    )
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -77,6 +98,43 @@ class Settings(BaseSettings):
                 f"Unsupported air quality pollutants: {', '.join(invalid)}"
             )
         return list(dict.fromkeys(value))
+
+    @field_validator(
+        "air_quality_high_concentration_limits",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_high_limits(cls, value: object) -> object:
+        if isinstance(value, dict) and any(
+            isinstance(limit, bool) for limit in value.values()
+        ):
+            raise ValueError("High concentration limits cannot be boolean")
+        return value
+
+    @field_validator("air_quality_high_concentration_limits")
+    @classmethod
+    def validate_high_concentration_limits(
+        cls,
+        value: dict[str, float],
+    ) -> dict[str, float]:
+        unknown = set(value) - set(DEFAULT_AIR_QUALITY_HIGH_CONCENTRATION_LIMITS)
+        if unknown:
+            raise ValueError(
+                f"Unknown pollutants in high concentration limits: "
+                f"{', '.join(sorted(unknown))}"
+            )
+
+        limits = DEFAULT_AIR_QUALITY_HIGH_CONCENTRATION_LIMITS | value
+        if any(
+            isinstance(limit, bool)
+            or not math.isfinite(limit)
+            or limit < 0
+            for limit in limits.values()
+        ):
+            raise ValueError(
+                "High concentration limits must be finite and nonnegative"
+            )
+        return limits
 
     @model_validator(mode="after")
     def validate_study_region_and_dates(self) -> "Settings":
